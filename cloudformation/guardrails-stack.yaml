@@ -1,0 +1,171 @@
+guardrails-stack.yaml
+# It defines the actual Bedrock Guardrail resource — the PHI entity blocking rules, prompt injection detection, and content filters
+# specifically which PII entity types matter in a clinical context (SSN gets BLOCK, name gets ANONYMIZE — that's a deliberate clinical governance decision, not a default). Most cloud candidates can't articulate that distinction.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Healthcare AI Governance — Bedrock Guardrails Stack
+  Creates Bedrock Guardrail with PHI/PII blocking, prompt injection detection,
+  and response content filtering.
+
+  Author: Ken Palmer | Palmer Consulting LLC
+
+Parameters:
+  Environment:
+    Type: String
+  ProjectName:
+    Type: String
+  KMSKeyArn:
+    Type: String
+  AuditTableArn:
+    Type: String
+  AuditTableName:
+    Type: String
+  BedrockModelId:
+    Type: String
+
+Resources:
+  ClinicalAIGuardrail:
+    Type: AWS::Bedrock::Guardrail
+    Properties:
+      Name: !Sub "${ProjectName}-clinical-guardrail-${Environment}"
+      Description: >
+        Clinical AI guardrail for PHI/PII blocking, prompt injection prevention,
+        and response content filtering. Enforces HIPAA-aligned content policies
+        for all clinical decision support interactions.
+      BlockedInputMessaging: >
+        This query contains protected health information or violates clinical AI
+        usage policies. Please rephrase without including patient identifiers.
+      BlockedOutputsMessaging: >
+        The AI response was blocked due to content policy violations. Contact
+        your system administrator if you believe this is an error.
+
+      SensitiveInformationPolicyConfig:
+        PiiEntitiesConfig:
+          - Type: NAME
+            Action: ANONYMIZE
+          - Type: EMAIL
+            Action: ANONYMIZE
+          - Type: PHONE
+            Action: ANONYMIZE
+          - Type: US_SOCIAL_SECURITY_NUMBER
+            Action: BLOCK
+          - Type: DATE_TIME
+            Action: ANONYMIZE
+          - Type: ADDRESS
+            Action: ANONYMIZE
+          - Type: US_PASSPORT_NUMBER
+            Action: BLOCK
+          - Type: DRIVER_ID
+            Action: BLOCK
+          - Type: AGE
+            Action: ANONYMIZE
+          - Type: CREDIT_DEBIT_CARD_NUMBER
+            Action: BLOCK
+
+      TopicPolicyConfig:
+        TopicsConfig:
+          - Name: PatientIdentification
+            Definition: >
+              Queries that attempt to identify or retrieve information about
+              specific named patients, including records or contact information.
+            Examples:
+              - "What medications is John Smith currently taking?"
+              - "Look up patient MRN 12345678"
+            Type: DENY
+          - Name: UnapprovedClinicalAdvice
+            Definition: >
+              Direct treatment recommendations presented as clinical orders
+              without appropriate physician oversight framing.
+            Type: DENY
+
+      ContentPolicyConfig:
+        FiltersConfig:
+          - Type: PROMPT_ATTACK
+            InputStrength: HIGH
+            OutputStrength: NONE
+          - Type: MISCONDUCT
+            InputStrength: HIGH
+            OutputStrength: HIGH
+          - Type: HATE
+            InputStrength: HIGH
+            OutputStrength: HIGH
+
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: HIPAARelevant
+          Value: "true"
+
+  GuardrailVersionParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /healthcare-ai-governance/bedrock/guardrail-version
+      Type: String
+      Value: "DRAFT"
+      Description: Active guardrail version — update to rotate without code redeployment
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+
+  GuardrailProxyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-guardrail-proxy-role-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: GuardrailProxyPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: BedrockInvoke
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:ApplyGuardrail
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${ClinicalAIGuardrail}"
+              - Sid: DynamoDBAuditWrite
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !Ref AuditTableArn
+              - Sid: SSMParameterRead
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/healthcare-ai-governance/*"
+              - Sid: KMSDecrypt
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !Ref KMSKeyArn
+
+Outputs:
+  GuardrailId:
+    Description: Bedrock Guardrail ID
+    Value: !Ref ClinicalAIGuardrail
+
+  GuardrailArn:
+    Description: Bedrock Guardrail ARN
+    Value: !GetAtt ClinicalAIGuardrail.GuardrailArn
+
+  GuardrailProxyRoleArn:
+    Value: !GetAtt GuardrailProxyRole.Arn
+
+  GuardrailProxyFunctionName:
+    Value: !Sub "${ProjectName}-guardrail-proxy-${Environment}"
+    

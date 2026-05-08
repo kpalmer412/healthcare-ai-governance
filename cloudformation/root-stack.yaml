@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Healthcare AI Governance Framework — Root Stack
+  Orchestrates nested stacks for Bedrock Guardrails, Step Functions,
+  CloudWatch monitoring, and storage infrastructure.
+  
+  Author: Ken Palmer | Palmer Consulting LLC
+  GitHub: kpalmer412/healthcare-ai-governance
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+
+  ProjectName:
+    Type: String
+    Default: healthcare-ai-governance
+
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-haiku-20240307-v1:0
+
+  ReviewerNotificationEmail:
+    Type: String
+    Description: Email for clinical reviewer notifications
+
+  AlertNotificationEmail:
+    Type: String
+    Description: Email for operational alerts
+
+  DriftAlarmThreshold:
+    Type: Number
+    Default: 0.15
+
+  LogRetentionDays:
+    Type: Number
+    Default: 90
+#need to set up KMS for encrption at rest for DynamoDB, S3, and CloudWatch Logs. This ensures that all sensitive data is protected using a customer-managed key (CMK) with appropriate access controls and key rotation policies.
+Resources:
+  GovernanceKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "CMK for ${ProjectName} — encrypts DynamoDB, S3, CloudWatch Logs"
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub "logs.${AWS::Region}.amazonaws.com"
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:GenerateDataKey
+              - kms:DescribeKey
+            Resource: "*"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  GovernanceKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${ProjectName}-${Environment}"
+      TargetKeyId: !Ref GovernanceKMSKey
+
+Outputs:
+  KMSKeyArn:
+    Description: CMK ARN for encryption at rest
+    Value: !GetAtt GovernanceKMSKey.Arn
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-KMSKeyArn"
+
+  DeploymentEnvironment:
+    Description: Deployment environment
+    Value: !Ref Environment

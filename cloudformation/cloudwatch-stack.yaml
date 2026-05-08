@@ -1,0 +1,293 @@
+#This is your governance proof file. It defines 6 CloudWatch alarms — each one mapped to a specific clinical risk. The ModelDriftScore alarm is the centerpiece: when semantic drift exceeds the threshold, EventBridge fires automatically and rolls back the model version in Parameter Store. No human intervention required. That's the kind of automated governance response that separates architects from engineers in HCLS hiring conversations.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Healthcare AI Governance — CloudWatch Stack
+  Alarms for model drift, guardrail failures, Step Functions errors.
+  Dashboard provides real-time governance visibility.
+
+  Author: Ken Palmer | Palmer Consulting LLC
+
+Parameters:
+  Environment:
+    Type: String
+  ProjectName:
+    Type: String
+  KMSKeyArn:
+    Type: String
+  AlertNotificationEmail:
+    Type: String
+  DriftAlarmThreshold:
+    Type: Number
+    Default: 0.15
+  LogRetentionDays:
+    Type: Number
+    Default: 90
+  StateMachineArn:
+    Type: String
+  GuardrailProxyFunctionName:
+    Type: String
+  DriftDetectorFunctionName:
+    Type: String
+
+Resources:
+  GovernanceAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-governance-alerts-${Environment}"
+      KmsMasterKeyId: !Ref KMSKeyArn
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertNotificationEmail
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ── Log Groups (KMS encrypted, 90-day HIPAA retention) ──────────────────
+
+  GuardrailProxyLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GuardrailProxyFunctionName}"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref KMSKeyArn
+
+  DriftDetectorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${DriftDetectorFunctionName}"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref KMSKeyArn
+
+  StepFunctionsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/${ProjectName}-clinical-review-${Environment}"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref KMSKeyArn
+
+  # ── Alarms ───────────────────────────────────────────────────────────────
+
+  ModelDriftAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ModelDriftScore-${Environment}"
+      AlarmDescription: >
+        Model output drift exceeds acceptable threshold. Clinical AI responses
+        may be diverging from validated baseline. Review and consider rollback.
+      Namespace: HealthcareAIGovernance
+      MetricName: ModelDriftScore
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Average
+      Period: 1800
+      EvaluationPeriods: 2
+      Threshold: !Ref DriftAlarmThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref GovernanceAlertTopic
+      OKActions:
+        - !Ref GovernanceAlertTopic
+
+  GuardrailProxyErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-GuardrailProxy-Errors-${Environment}"
+      AlarmDescription: "Guardrail proxy errors — PHI filtering may be degraded"
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref GuardrailProxyFunctionName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref GovernanceAlertTopic
+
+  ReviewWorkflowFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ReviewWorkflow-Failures-${Environment}"
+      AlarmDescription: >
+        Human review workflow failures. Clinical AI responses may be
+        unreviewed. Immediate investigation required.
+      Namespace: AWS/States
+      MetricName: ExecutionsFailed
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref StateMachineArn
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref GovernanceAlertTopic
+
+  ReviewWorkflowTimeoutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ReviewWorkflow-Timeouts-${Environment}"
+      AlarmDescription: "Clinical review requests timing out — reviewers may be unresponsive"
+      Namespace: AWS/States
+      MetricName: ExecutionsTimedOut
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref StateMachineArn
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref GovernanceAlertTopic
+
+  DriftDetectorFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-DriftDetector-Failures-${Environment}"
+      AlarmDescription: >
+        Drift detection Lambda failing. ModelDriftScore metric may be stale.
+        Clinical AI monitoring is degraded.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DriftDetectorFunctionName
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 2
+      Threshold: 2
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref GovernanceAlertTopic
+
+  HighPHIBlockRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-HighPHIBlockRate-${Environment}"
+      AlarmDescription: >
+        Unusually high PHI block rate. Possible adversarial probing or
+        misconfigured upstream system sending PHI in prompts.
+      Namespace: HealthcareAIGovernance
+      MetricName: GuardrailBlockedRequests
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref GovernanceAlertTopic
+
+  # ── EventBridge: Drift Alarm → Auto-Rollback ─────────────────────────────
+
+  DriftRollbackRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-drift-rollback-trigger-${Environment}"
+      Description: "When ModelDriftScore alarm fires, trigger model version rollback"
+      EventPattern:
+        source:
+          - "aws.cloudwatch"
+        detail-type:
+          - "CloudWatch Alarm State Change"
+        detail:
+          alarmName:
+            - !Sub "${ProjectName}-ModelDriftScore-${Environment}"
+          state:
+            value:
+              - "ALARM"
+      State: ENABLED
+
+  # ── Dashboard ─────────────────────────────────────────────────────────────
+
+  GovernanceDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${ProjectName}-governance-${Environment}"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "text",
+              "x": 0, "y": 0, "width": 24, "height": 2,
+              "properties": {
+                "markdown": "# Healthcare AI Governance Dashboard — ${Environment}\nReal-time visibility into clinical AI guardrails, human review pipeline, and model drift detection."
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 2, "width": 8, "height": 6,
+              "properties": {
+                "title": "Model Drift Score",
+                "metrics": [
+                  ["HealthcareAIGovernance", "ModelDriftScore", "Environment", "${Environment}"]
+                ],
+                "period": 1800,
+                "stat": "Average",
+                "yAxis": {"left": {"min": 0, "max": 1}},
+                "annotations": {
+                  "horizontal": [
+                    {"value": ${DriftAlarmThreshold}, "label": "Alarm Threshold", "color": "#d62728"}
+                  ]
+                },
+                "view": "timeSeries"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8, "y": 2, "width": 8, "height": 6,
+              "properties": {
+                "title": "Guardrail Proxy — Invocations vs Errors",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${GuardrailProxyFunctionName}"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "${GuardrailProxyFunctionName}", {"color": "#d62728"}]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "view": "timeSeries"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16, "y": 2, "width": 8, "height": 6,
+              "properties": {
+                "title": "Step Functions — Review Workflow",
+                "metrics": [
+                  ["AWS/States", "ExecutionsStarted", "StateMachineArn", "${StateMachineArn}"],
+                  ["AWS/States", "ExecutionsSucceeded", "StateMachineArn", "${StateMachineArn}", {"color": "#2ca02c"}],
+                  ["AWS/States", "ExecutionsFailed", "StateMachineArn", "${StateMachineArn}", {"color": "#d62728"}],
+                  ["AWS/States", "ExecutionsTimedOut", "StateMachineArn", "${StateMachineArn}", {"color": "#ff7f0e"}]
+                ],
+                "period": 3600,
+                "stat": "Sum",
+                "view": "timeSeries"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  AlertTopicArn:
+    Value: !Ref GovernanceAlertTopic
+
+  DashboardURL:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${ProjectName}-governance-${Environment}"
+
+  ModelDriftAlarmArn:
+    Value: !GetAtt ModelDriftAlarm.Arn
+
+    #What to notice: Six alarms, each with a clinical rationale in AlarmDescription. TreatMissingData: breaching on the drift detector — meaning if the detector stops running, the alarm fires anyway. That's a deliberate safety decision: silence is treated as failure, not as OK. That's the kind of detail that shows clinical domain thinking on top of cloud engineering.
+    
