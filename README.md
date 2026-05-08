@@ -226,6 +226,7 @@ Full controls mapping: [`docs/hipaa-controls-mapping.md`](docs/hipaa-controls-ma
 
 **Ken Palmer** | AWS Solutions Architect Associate  
 Palmer Consulting LLC | Pittsburgh, PA  
-[github.com/kpalmer412](https://github.com/kpalmer412) | [LinkedIn](https://linkedin.com/in/kenpalmer)
+[github.com/kpalmer412](https://github.com/kpalmer412) | linkedin.com/in/ken-palmer-
+
 
 *15+ years in healthcare/life sciences (Epic Beaker, HL7/FHIR, NGS/genomics) + AWS cloud engineering*
