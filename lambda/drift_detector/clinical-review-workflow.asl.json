@@ -1,0 +1,124 @@
+{
+    "Comment": "Healthcare AI Governance — Clinical Human-in-the-Loop Review Workflow. Triggered when model confidence is LOW/MEDIUM or use case is high-risk. Uses waitForTaskToken pattern for async human review without Lambda idle cost.",
+    "StartAt": "NotifyReviewer",
+    "States": {
+        "NotifyReviewer": {
+            "Type": "Task",
+            "Comment": "Send review request to clinical reviewer via SNS. Includes session context and callback URL with encrypted task token.",
+            "Resource": "arn:aws:states:::sns:publish",
+            "Parameters": {
+                "TopicArn.$": "$.reviewer_notification_topic_arn",
+                "Message": {
+                    "Input": {
+                        "session_id.$": "$.session_id",
+                        "request_id.$": "$.request_id",
+                        "use_case.$": "$.use_case",
+                        "confidence_score.$": "$.confidence_score",
+                        "submitted_at.$": "$.submitted_at",
+                        "review_instructions": "Please review the AI-generated clinical response and approve, reject, or override.",
+                        "callback_endpoint": "https://api.healthcare-ai-governance.internal/review/callback"
+                    }
+                },
+                "Subject": "Clinical AI Review Required — Action Needed"
+            },
+            "Next": "WaitForHumanReview",
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "Next": "NotificationFailed",
+                    "ResultPath": "$.error"
+                }
+            ]
+        },
+        "WaitForHumanReview": {
+            "Type": "Task",
+            "Comment": "Pause execution and wait for reviewer callback. Costs nothing while waiting. Heartbeat: 30min. Timeout: 24hr.",
+            "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+            "Parameters": {
+                "FunctionName.$": "$.human_review_callback_function_arn",
+                "Payload": {
+                    "task_token.$": "$$.Task.Token",
+                    "session_id.$": "$.session_id",
+                    "request_id.$": "$.request_id",
+                    "use_case.$": "$.use_case",
+                    "confidence_score.$": "$.confidence_score",
+                    "submitted_at.$": "$.submitted_at",
+                    "reviewer_instructions": "Please complete the review and signal the Step Functions task with the decision."
+                }
+            },
+            "HeartbeatSeconds": 1800,
+            "TimeoutSeconds": 86400,
+            "Next": "DetermineReviewOutcome",
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "Next": "ReviewFailed",
+                    "ResultPath": "$.error"
+                }
+            ]
+        },
+        "DetermineReviewOutcome": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.review_decision",
+                    "StringEquals": "APPROVE",
+                    "Next": "ReviewApproved"
+                },
+                {
+                    "Variable": "$.review_decision",
+                    "StringEquals": "REJECT",
+                    "Next": "ReviewRejected"
+                },
+                {
+                    "Variable": "$.review_decision",
+                    "StringEquals": "OVERRIDE",
+                    "Next": "ReviewOverride"
+                }
+            ],
+            "Default": "ReviewUndetermined"
+        },
+        "ReviewApproved": {
+            "Type": "Pass",
+            "Comment": "Workflow continues with approved clinical review outcome.",
+            "Result": {
+                "status": "APPROVED",
+                "message": "Clinical reviewer approved the AI-generated response."
+            },
+            "End": true
+        },
+        "ReviewRejected": {
+            "Type": "Pass",
+            "Comment": "Workflow ends with rejected clinical review outcome.",
+            "Result": {
+                "status": "REJECTED",
+                "message": "Clinical reviewer rejected the AI-generated response."
+            },
+            "End": true
+        },
+        "ReviewOverride": {
+            "Type": "Pass",
+            "Comment": "Workflow ends with clinician override outcome.",
+            "Result": {
+                "status": "OVERRIDDEN",
+                "message": "Clinical reviewer provided an override to the AI-generated response."
+            },
+            "End": true
+        },
+        "ReviewUndetermined": {
+            "Type": "Fail",
+            "Error": "ReviewDecisionMissing",
+            "Cause": "The clinical review callback returned an unknown or missing decision."
+        },
+        "NotificationFailed": {
+            "Type": "Fail",
+            "Error": "NotificationPublishFailed",
+            "Cause": "Failed to send the clinical review notification."
+        },
+        "ReviewFailed": {
+            "Type": "Fail",
+            "Error": "HumanReviewWorkflowFailed",
+            "Cause": "The human review wait state failed, timed out, or was aborted."
+        }
+    }
+}
