@@ -212,4 +212,3 @@ def _emit_cloudwatch_metric(metric_name, value, unit):
         )
     except ClientError as e:
         logger.error(f"Failed to emit CloudWatch metric {metric_name}: {e}")
-        

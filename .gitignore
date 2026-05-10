@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+.terraform.lock.hcl
+crash.log
+
+# AWS — never commit credentials or SAM build artifacts
+.aws/
+*.pem
+*.key
+*credentials*
+.aws-sam/
+
+# CloudFormation packaged artifacts
+packaged-template.yaml
+packaged/
+
+# Lambda deployment zips
+*.zip
+packaging/
+
+# VS Code
+.vscode/
+
+# Mac system files
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.env
+.env.*
+
