@@ -20,14 +20,6 @@ terraform {
     }
   }
 
-  # Remote state — S3 backend
-  # Configure via CLI:
-  # terraform init \
-  #   -backend-config="bucket=my-tfstate-bucket" \
-  #   -backend-config="key=healthcare-ai-governance/dev/terraform.tfstate" \
-  #   -backend-config="region=us-east-1" \
-  #   -backend-config="dynamodb_table=terraform-state-lock"
-  backend "s3" {}
 }
 
 provider "aws" {
