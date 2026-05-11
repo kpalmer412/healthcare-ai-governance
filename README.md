@@ -17,7 +17,7 @@ Healthcare organizations deploying LLM-based clinical decision support face thre
 | No human review for low-confidence outputs | Adverse patient events, liability |
 | No mechanism to detect model output drift | Regulatory non-compliance, silent degradation |
 
-i want to  configure Bedrock and  architect the *governance layer* around it.
+
 
 ---
 
